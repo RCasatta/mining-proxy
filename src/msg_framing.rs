@@ -1625,3 +1625,22 @@ impl codec::Decoder for PoolMsgFramer {
 		}
 	}
 }
+
+
+#[cfg(test)]
+mod tests {
+
+	#[test]
+	fn push_compact_size_test() {
+		use super::push_compact_size;
+		use bytes::BytesMut;
+		use bitcoin::network::encodable::VarInt;
+
+		let values: Vec<usize> = vec![0xFC, 0xFD, 0xFFFF, 0x10000];
+		for value in values {
+			let mut buf = BytesMut::with_capacity(10);
+			push_compact_size(value, &mut buf);
+			assert_eq!( buf.len(), VarInt(value as u64).encoded_length() as usize);
+		}
+	}
+}
