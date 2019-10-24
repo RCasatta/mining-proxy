@@ -1,11 +1,11 @@
 extern crate bitcoin;
 extern crate bytes;
-extern crate futures;
-extern crate tokio;
-extern crate tokio_io;
-extern crate tokio_codec;
 extern crate crypto;
+extern crate futures;
 extern crate secp256k1;
+extern crate tokio;
+extern crate tokio_codec;
+extern crate tokio_io;
 
 #[macro_use]
 extern crate serde_json;
@@ -33,87 +33,87 @@ mod timeout_stream;
 
 use futures::future;
 use futures::sync::mpsc;
-use futures::{Future,Stream,Sink};
+use futures::{Future, Sink, Stream};
 
 use tokio::net;
 
 use std::env;
-use std::sync::{Arc, Mutex};
 use std::net::ToSocketAddrs;
+use std::sync::{Arc, Mutex};
 
 struct CurrentWork {
-	cur_work: Option<WorkProviderJob>,
-	cur_pool_work: Option<PoolProviderJob>,
+    cur_work: Option<WorkProviderJob>,
+    cur_pool_work: Option<PoolProviderJob>,
 }
 
 fn main() {
-	println!("USAGE: pool-proxy (--job_provider=host:port)* --pool_server=host:port --stratum_listen_bind=IP:port");
-	println!("A stratum proxy for a number of different user clients against one pool");
-	println!("--job_provider - bitcoind(s) running as mining server(s) to get work from");
-	println!("--pool_server - pool server(s) to get payout address from/submit shares to");
-	println!("--stratum_listen_bind - the address to bind to to announce stratum jobs on");
-	println!("We always try to keep exactly one connection open per argument, no matter how");
-	println!("many hosts a DNS name may resolve to. We try each hostname until one works.");
-	println!("Job providers are not prioritized (the latest job is always used)");
+    println!("USAGE: pool-proxy (--job_provider=host:port)* --pool_server=host:port --stratum_listen_bind=IP:port");
+    println!("A stratum proxy for a number of different user clients against one pool");
+    println!("--job_provider - bitcoind(s) running as mining server(s) to get work from");
+    println!("--pool_server - pool server(s) to get payout address from/submit shares to");
+    println!("--stratum_listen_bind - the address to bind to to announce stratum jobs on");
+    println!("We always try to keep exactly one connection open per argument, no matter how");
+    println!("many hosts a DNS name may resolve to. We try each hostname until one works.");
+    println!("Job providers are not prioritized (the latest job is always used)");
 
-	let mut job_provider_hosts = Vec::new();
-	let mut pool_server_host = None;
-	let mut stratum_listen_bind = None;
+    let mut job_provider_hosts = Vec::new();
+    let mut pool_server_host = None;
+    let mut stratum_listen_bind = None;
 
-	for arg in env::args().skip(1) {
-		if arg.starts_with("--job_provider") {
-			match arg.split_at(15).1.to_socket_addrs() {
-				Err(_) => {
-					println!("Bad address resolution: {}", arg);
-					return;
-				},
-				Ok(_) => job_provider_hosts.push(arg.split_at(15).1.to_string())
-			}
-		} else if arg.starts_with("--pool_server") {
-			if pool_server_host.is_some() {
-				println!("Cannot specify multiple pool servers");
-				return;
-			}
-			match arg.split_at(14).1.to_socket_addrs() {
-				Err(_) => {
-					println!("Bad address resolution: {}", arg);
-					return;
-				},
-				Ok(_) => pool_server_host = Some(arg.split_at(14).1.to_string()),
-			}
-		} else if arg.starts_with("--stratum_listen_bind") {
-			if stratum_listen_bind.is_some() {
-				println!("Cannot specify multiple listen binds");
-				return;
-			}
-			stratum_listen_bind = Some(match arg.split_at(22).1.parse() {
-				Ok(sockaddr) => sockaddr,
-				Err(_) =>{
-					println!("Failed to parse stratum_listen_bind into a socket address");
-					return;
-				}
-			});
-		} else {
-			println!("Unkown arg: {}", arg);
-			return;
-		}
-	}
+    for arg in env::args().skip(1) {
+        if arg.starts_with("--job_provider") {
+            match arg.split_at(15).1.to_socket_addrs() {
+                Err(_) => {
+                    println!("Bad address resolution: {}", arg);
+                    return;
+                }
+                Ok(_) => job_provider_hosts.push(arg.split_at(15).1.to_string()),
+            }
+        } else if arg.starts_with("--pool_server") {
+            if pool_server_host.is_some() {
+                println!("Cannot specify multiple pool servers");
+                return;
+            }
+            match arg.split_at(14).1.to_socket_addrs() {
+                Err(_) => {
+                    println!("Bad address resolution: {}", arg);
+                    return;
+                }
+                Ok(_) => pool_server_host = Some(arg.split_at(14).1.to_string()),
+            }
+        } else if arg.starts_with("--stratum_listen_bind") {
+            if stratum_listen_bind.is_some() {
+                println!("Cannot specify multiple listen binds");
+                return;
+            }
+            stratum_listen_bind = Some(match arg.split_at(22).1.parse() {
+                Ok(sockaddr) => sockaddr,
+                Err(_) => {
+                    println!("Failed to parse stratum_listen_bind into a socket address");
+                    return;
+                }
+            });
+        } else {
+            println!("Unkown arg: {}", arg);
+            return;
+        }
+    }
 
-	if job_provider_hosts.is_empty() {
-		println!("Need at least some job providers");
-		return;
-	}
-	if pool_server_host.is_none() {
-		println!("Need at least a pool server");
-		return;
-	}
-	if stratum_listen_bind.is_none() {
-		println!("Need some stratum listen bind");
-		return;
-	}
+    if job_provider_hosts.is_empty() {
+        println!("Need at least some job providers");
+        return;
+    }
+    if pool_server_host.is_none() {
+        println!("Need at least a pool server");
+        return;
+    }
+    if stratum_listen_bind.is_none() {
+        println!("Need some stratum listen bind");
+        return;
+    }
 
-	let mut rt = tokio::runtime::Runtime::new().unwrap();
-	rt.spawn(future::lazy(move || -> Result<(), ()> {
+    let mut rt = tokio::runtime::Runtime::new().unwrap();
+    rt.spawn(future::lazy(move || -> Result<(), ()> {
 		let cur_work = Arc::new(Mutex::new(CurrentWork {
 			cur_work: None,
 			cur_pool_work: None,
@@ -181,5 +181,5 @@ fn main() {
 		}
 		Ok(())
 	}));
-	rt.shutdown_on_idle().wait().unwrap();
+    rt.shutdown_on_idle().wait().unwrap();
 }

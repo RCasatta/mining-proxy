@@ -7,11 +7,11 @@ extern crate bytes;
 extern crate crypto;
 extern crate futures;
 extern crate hyper;
-extern crate tokio;
-extern crate tokio_io;
-extern crate tokio_codec;
 extern crate secp256k1;
 extern crate serde_json;
+extern crate tokio;
+extern crate tokio_codec;
+extern crate tokio_io;
 
 mod msg_framing;
 use msg_framing::*;
@@ -27,39 +27,38 @@ use generational_hash_sets::*;
 mod timeout_stream;
 use timeout_stream::TimeoutStream;
 
-use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::block::BlockHeader;
-use bitcoin::network::serialize::BitcoinHash;
+use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::network;
+use bitcoin::network::serialize::BitcoinHash;
 use bitcoin::util::address::Address;
-use bitcoin::util::privkey;
 use bitcoin::util::hash::Sha256dHash;
+use bitcoin::util::privkey;
 
 use bytes::BufMut;
 
 use crypto::digest::Digest;
 use crypto::sha2::Sha256;
 
-use futures::{future,Stream,Sink,Future};
 use futures::sync::mpsc;
+use futures::{future, Future, Sink, Stream};
 
 use tokio::{net, timer};
 
 use secp256k1::key::PublicKey;
 use secp256k1::Secp256k1;
 
-use std::{cmp, env, io, mem};
-use std::str::FromStr;
-use std::sync::{Arc, Weak, Mutex, RwLock};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use std::collections::{hash_map, HashMap, HashSet};
+use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{cmp, env, io, mem};
 
-
-#[cfg(feature = "kafka_submitter")]
-extern crate serde;
 #[cfg(feature = "kafka_submitter")]
 extern crate rdkafka;
+#[cfg(feature = "kafka_submitter")]
+extern crate serde;
 #[cfg(feature = "kafka_submitter")]
 #[macro_use]
 extern crate serde_derive;
@@ -102,278 +101,328 @@ const MIN_USER_SHARES_PER_30_SEC: usize = 2;
 const MAX_TARGET_LEADING_0S: u8 = 71 - WEAK_BLOCK_RATIO_0S; // Roughly network diff/16 at the time of writing, should be more than sufficiently high for any use-case
 
 struct PerUserClientRef {
-	send_stream: mpsc::Sender<PoolMessage>,
-	client_id: u64,
-	user_id: Vec<u8>,
-	min_target: u8,
-	cur_target: AtomicUsize,
-	accepted_shares: AtomicUsize,
-	submitted_header_hashes: GenerationalHashSets,
+    send_stream: mpsc::Sender<PoolMessage>,
+    client_id: u64,
+    user_id: Vec<u8>,
+    min_target: u8,
+    cur_target: AtomicUsize,
+    accepted_shares: AtomicUsize,
+    submitted_header_hashes: GenerationalHashSets,
 }
 
 struct AllowedBlocksInfo {
-	/// hash -> chainwork
-	allowed_prev_blocks: HashMap<[u8; 32], [u8; 32]>,
-	best_chainwork: [u8; 32],
-	cur_target: [u8; 32],
-	old_prev_blocks: HashSet<[u8; 32]>,
-	tentative_submitted_prev_blocks: HashSet<[u8; 32]>,
-	users_ref: Arc<Mutex<Vec<Weak<PerUserClientRef>>>>,
+    /// hash -> chainwork
+    allowed_prev_blocks: HashMap<[u8; 32], [u8; 32]>,
+    best_chainwork: [u8; 32],
+    cur_target: [u8; 32],
+    old_prev_blocks: HashSet<[u8; 32]>,
+    tentative_submitted_prev_blocks: HashSet<[u8; 32]>,
+    users_ref: Arc<Mutex<Vec<Weak<PerUserClientRef>>>>,
 }
 enum HeaderStatus {
-	TentativeAccept,
-	TentativeReject,
-	Absurd,
+    TentativeAccept,
+    TentativeReject,
+    Absurd,
 }
 impl AllowedBlocksInfo {
-	fn update_chainwork(&mut self, chainwork: [u8; 32]) {
-		println!("New best-seen-block, rejecting old blocks now!");
-		let old_prev_blocks = &mut self.old_prev_blocks;
-		let mut blocks_wiped = Vec::with_capacity(2);
-		self.allowed_prev_blocks.retain(|prev_hash, old_chainwork| {
-			if !utils::does_hash_meet_target(&chainwork, old_chainwork) { // !(chainwork <= old_chainwork) ie old_chainwork < chainwork
-				old_prev_blocks.insert(prev_hash.clone());
-				blocks_wiped.push(prev_hash.clone());
-				false
-			} else { true }
-		});
-		self.best_chainwork = chainwork;
-		let users_ref = self.users_ref.clone();
-		tokio::spawn(future::lazy(move || {
-			let users = users_ref.lock().unwrap().clone();
-			for user_ref in users {
-				if let Some(user) = user_ref.upgrade() {
-					for block_hash in blocks_wiped.iter() {
-						user.submitted_header_hashes.wipe_generation(block_hash);
-					}
-				}
-			}
-			Ok(())
-		}));
-	}
+    fn update_chainwork(&mut self, chainwork: [u8; 32]) {
+        println!("New best-seen-block, rejecting old blocks now!");
+        let old_prev_blocks = &mut self.old_prev_blocks;
+        let mut blocks_wiped = Vec::with_capacity(2);
+        self.allowed_prev_blocks.retain(|prev_hash, old_chainwork| {
+            if !utils::does_hash_meet_target(&chainwork, old_chainwork) {
+                // !(chainwork <= old_chainwork) ie old_chainwork < chainwork
+                old_prev_blocks.insert(prev_hash.clone());
+                blocks_wiped.push(prev_hash.clone());
+                false
+            } else {
+                true
+            }
+        });
+        self.best_chainwork = chainwork;
+        let users_ref = self.users_ref.clone();
+        tokio::spawn(future::lazy(move || {
+            let users = users_ref.lock().unwrap().clone();
+            for user_ref in users {
+                if let Some(user) = user_ref.upgrade() {
+                    for block_hash in blocks_wiped.iter() {
+                        user.submitted_header_hashes.wipe_generation(block_hash);
+                    }
+                }
+            }
+            Ok(())
+        }));
+    }
 
-	fn check_block(&mut self, header: &serde_json::Value) {
-		if let Some(serde_json::Value::String(chainwork_v)) = header.get("chainwork") {
-			if let Some(serde_json::Value::String(hash_v)) = header.get("hash") {
-				if let Some(serde_json::Value::Number(confs_v)) = header.get("confirmations") {
-					if let Some(confs) = confs_v.as_i64() {
-						if let Some(chainwork) = utils::hex_to_u256_rev(&chainwork_v) {
-							if let Some(hash) = utils::hex_to_u256_rev(&hash_v) {
-								let equal_or_better = utils::does_hash_meet_target(&self.best_chainwork, &chainwork);
-								if self.best_chainwork == chainwork {
-									println!("New header tied with current tip!");
-									self.allowed_prev_blocks.insert(hash, chainwork);
-								} else if confs >= 0 && equal_or_better {
-									self.update_chainwork(chainwork.clone());
-									self.allowed_prev_blocks.insert(hash, chainwork);
-								} else if equal_or_better {
-									println!("Got new header with more work, waiting on block validation to reject stale shares");
-									self.allowed_prev_blocks.insert(hash, chainwork);
-								} else {
-									self.old_prev_blocks.insert(hash);
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
+    fn check_block(&mut self, header: &serde_json::Value) {
+        if let Some(serde_json::Value::String(chainwork_v)) = header.get("chainwork") {
+            if let Some(serde_json::Value::String(hash_v)) = header.get("hash") {
+                if let Some(serde_json::Value::Number(confs_v)) = header.get("confirmations") {
+                    if let Some(confs) = confs_v.as_i64() {
+                        if let Some(chainwork) = utils::hex_to_u256_rev(&chainwork_v) {
+                            if let Some(hash) = utils::hex_to_u256_rev(&hash_v) {
+                                let equal_or_better =
+                                    utils::does_hash_meet_target(&self.best_chainwork, &chainwork);
+                                if self.best_chainwork == chainwork {
+                                    println!("New header tied with current tip!");
+                                    self.allowed_prev_blocks.insert(hash, chainwork);
+                                } else if confs >= 0 && equal_or_better {
+                                    self.update_chainwork(chainwork.clone());
+                                    self.allowed_prev_blocks.insert(hash, chainwork);
+                                } else if equal_or_better {
+                                    println!("Got new header with more work, waiting on block validation to reject stale shares");
+                                    self.allowed_prev_blocks.insert(hash, chainwork);
+                                } else {
+                                    self.old_prev_blocks.insert(hash);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-	fn submit_header(us: &Arc<RwLock<Self>>, header: BlockHeader, client: &Arc<RPCClient>) -> HeaderStatus {
-		let blockhash = header.bitcoin_hash();
-		let mut hash_arr = [0; 32];
-		hash_arr[..].copy_from_slice(&blockhash[..]);
-		if utils::count_leading_zeros(&hash_arr) < 32 {
-			// They can't even be mining after genesis, kick them
-			return HeaderStatus::Absurd;
-		}
+    fn submit_header(
+        us: &Arc<RwLock<Self>>,
+        header: BlockHeader,
+        client: &Arc<RPCClient>,
+    ) -> HeaderStatus {
+        let blockhash = header.bitcoin_hash();
+        let mut hash_arr = [0; 32];
+        hash_arr[..].copy_from_slice(&blockhash[..]);
+        if utils::count_leading_zeros(&hash_arr) < 32 {
+            // They can't even be mining after genesis, kick them
+            return HeaderStatus::Absurd;
+        }
 
-		let mut us_lock = us.write().unwrap();
-		if !utils::does_hash_meet_target_div4(&hash_arr, &us_lock.cur_target) {
-			// They are definitely out-of-date, but may not be trying to DoS us (or we're
-			// out-of-date and still syncing)
-			return HeaderStatus::TentativeReject;
-		}
+        let mut us_lock = us.write().unwrap();
+        if !utils::does_hash_meet_target_div4(&hash_arr, &us_lock.cur_target) {
+            // They are definitely out-of-date, but may not be trying to DoS us (or we're
+            // out-of-date and still syncing)
+            return HeaderStatus::TentativeReject;
+        }
 
-		// We'd really like to only use div4 here, since that is actually the consensus-rule, but
-		// BCash might conceivably get 25% of Bitcoin's hashrate, allowing someone to (very briefly)
-		// mine BCash-based shares. Once BCash dies off we should just remove this check.
-		let res = if utils::does_hash_meet_target_div2(&hash_arr, &us_lock.cur_target) {
-			us_lock.tentative_submitted_prev_blocks.insert(hash_arr);
-			HeaderStatus::TentativeAccept
-		} else { HeaderStatus::TentativeReject };
+        // We'd really like to only use div4 here, since that is actually the consensus-rule, but
+        // BCash might conceivably get 25% of Bitcoin's hashrate, allowing someone to (very briefly)
+        // mine BCash-based shares. Once BCash dies off we should just remove this check.
+        let res = if utils::does_hash_meet_target_div2(&hash_arr, &us_lock.cur_target) {
+            us_lock.tentative_submitted_prev_blocks.insert(hash_arr);
+            HeaderStatus::TentativeAccept
+        } else {
+            HeaderStatus::TentativeReject
+        };
 
-		let us_clone = us.clone();
-		let client_clone = client.clone();
-		tokio::spawn(client.make_rpc_call("submitblockheader", &vec![&("\"".to_string() + &network::serialize::serialize_hex(&header).unwrap() + "\"")]).then(move |_| {
-			client_clone.make_rpc_call("getblockheader", &vec![&("\"".to_string() + &blockhash.be_hex_string() + "\"")]).then(move |header_data_option| {
-				let mut us_lock = us_clone.write().unwrap();
-				if let Ok(header_data) = header_data_option {
-					us_lock.check_block(&header_data);
-				}
-				us_lock.tentative_submitted_prev_blocks.remove(&hash_arr);
-				Ok(())
-			})
-		}));
+        let us_clone = us.clone();
+        let client_clone = client.clone();
+        tokio::spawn(
+            client
+                .make_rpc_call(
+                    "submitblockheader",
+                    &vec![
+                        &("\"".to_string()
+                            + &network::serialize::serialize_hex(&header).unwrap()
+                            + "\""),
+                    ],
+                )
+                .then(move |_| {
+                    client_clone
+                        .make_rpc_call(
+                            "getblockheader",
+                            &vec![&("\"".to_string() + &blockhash.be_hex_string() + "\"")],
+                        )
+                        .then(move |header_data_option| {
+                            let mut us_lock = us_clone.write().unwrap();
+                            if let Ok(header_data) = header_data_option {
+                                us_lock.check_block(&header_data);
+                            }
+                            us_lock.tentative_submitted_prev_blocks.remove(&hash_arr);
+                            Ok(())
+                        })
+                }),
+        );
 
-		res
-	}
+        res
+    }
 }
 
 fn main() {
-	println!("USAGE: sample-pool --listen_bind=IP:port --auth_key=base58privkey --payout_address=addr [--server_id=up_to_36_byte_string_for_coinbase] --bitcoind_rpc_path=user:pass@host:port");
-	println!("--listen_bind - the address to bind to");
-	println!("--auth_key - the auth key to use to authenticate to clients");
-	println!("--payout_address - the Bitcoin address on which to receive payment");
-	println!("--bitcoind_rpc_path - the bitcoind RPC server for checking weak block validity");
-	println!("                      and header submission");
-	print_submitter_parameters();
-	print_authenticator_parameters();
+    println!("USAGE: sample-pool --listen_bind=IP:port --auth_key=base58privkey --payout_address=addr [--server_id=up_to_36_byte_string_for_coinbase] --bitcoind_rpc_path=user:pass@host:port");
+    println!("--listen_bind - the address to bind to");
+    println!("--auth_key - the auth key to use to authenticate to clients");
+    println!("--payout_address - the Bitcoin address on which to receive payment");
+    println!("--bitcoind_rpc_path - the bitcoind RPC server for checking weak block validity");
+    println!("                      and header submission");
+    print_submitter_parameters();
+    print_authenticator_parameters();
 
-	let mut listen_bind = None;
-	let mut auth_key = None;
-	let mut payout_addr = None;
-	let mut server_id = None;
-	let mut rpc_path = None;
+    let mut listen_bind = None;
+    let mut auth_key = None;
+    let mut payout_addr = None;
+    let mut server_id = None;
+    let mut rpc_path = None;
 
-	let mut submitter_settings = init_submitter_settings();
-	let mut authenticator_settings = init_authenticator_settings();
+    let mut submitter_settings = init_submitter_settings();
+    let mut authenticator_settings = init_authenticator_settings();
 
-	for arg in env::args().skip(1) {
-		if arg.starts_with("--listen_bind") {
-			if listen_bind.is_some() {
-				println!("Cannot specify multiple listen binds");
-				return;
-			}
-			listen_bind = Some(match arg.split_at(14).1.parse() {
-				Ok(sockaddr) => sockaddr,
-				Err(_) =>{
-					println!("Failed to parse listen_bind into a socket address");
-					return;
-				}
-			});
-		} else if arg.starts_with("--auth_key") {
-			if auth_key.is_some() {
-				println!("Cannot specify multiple auth keys");
-				return;
-			}
-			auth_key = Some(match privkey::Privkey::from_str(arg.split_at(11).1) {
-				Ok(privkey) => {
-					if !privkey.compressed {
-						println!("Private key must represent a compressed key!");
-						return;
-					}
-					privkey.key
-				},
-				Err(_) =>{
-					println!("Failed to parse auth_key into a private key");
-					return;
-				}
-			});
-		} else if arg.starts_with("--payout_address") {
-			if payout_addr.is_some() {
-				println!("Cannot specify multiple payout addresses");
-				return;
-			}
-			//TODO: check network magic byte? We're allowed to mine on any net, though...
-			payout_addr = Some(match Address::from_str(arg.split_at(17).1) {
-				Ok(addr) => addr.script_pubkey(),
-				Err(_) => {
-					println!("Failed to parse payout_address into a Bitcoin address");
-					return;
-				}
-			});
-		} else if arg.starts_with("--server_id") {
-			if server_id.is_some() {
-				println!("Cannot specify multiple server IDs");
-				return;
-			}
-			server_id = Some(arg.split_at(12).1.to_string());
-			if server_id.as_ref().unwrap().len() > 36 {
-				println!("server_id cannot be longer than 36 bytes");
-				return;
-			}
-		} else if arg.starts_with("--bitcoind_rpc_path") {
-			if rpc_path.is_some() {
-				println!("Cannot specify multiple bitcoinds");
-				return;
-			}
-			rpc_path = Some(arg.split_at(20).1.to_string());
-		} else if parse_submitter_parameter(&mut submitter_settings, &arg) {
-			// Submitter did something useful!
-		} else if parse_authenticator_parameter(&mut authenticator_settings, &arg) {
-			// So as Authenticator!
-		} else {
-			println!("Unkown arg: {}", arg);
-			return;
-		}
-	}
+    for arg in env::args().skip(1) {
+        if arg.starts_with("--listen_bind") {
+            if listen_bind.is_some() {
+                println!("Cannot specify multiple listen binds");
+                return;
+            }
+            listen_bind = Some(match arg.split_at(14).1.parse() {
+                Ok(sockaddr) => sockaddr,
+                Err(_) => {
+                    println!("Failed to parse listen_bind into a socket address");
+                    return;
+                }
+            });
+        } else if arg.starts_with("--auth_key") {
+            if auth_key.is_some() {
+                println!("Cannot specify multiple auth keys");
+                return;
+            }
+            auth_key = Some(match privkey::Privkey::from_str(arg.split_at(11).1) {
+                Ok(privkey) => {
+                    if !privkey.compressed {
+                        println!("Private key must represent a compressed key!");
+                        return;
+                    }
+                    privkey.key
+                }
+                Err(_) => {
+                    println!("Failed to parse auth_key into a private key");
+                    return;
+                }
+            });
+        } else if arg.starts_with("--payout_address") {
+            if payout_addr.is_some() {
+                println!("Cannot specify multiple payout addresses");
+                return;
+            }
+            //TODO: check network magic byte? We're allowed to mine on any net, though...
+            payout_addr = Some(match Address::from_str(arg.split_at(17).1) {
+                Ok(addr) => addr.script_pubkey(),
+                Err(_) => {
+                    println!("Failed to parse payout_address into a Bitcoin address");
+                    return;
+                }
+            });
+        } else if arg.starts_with("--server_id") {
+            if server_id.is_some() {
+                println!("Cannot specify multiple server IDs");
+                return;
+            }
+            server_id = Some(arg.split_at(12).1.to_string());
+            if server_id.as_ref().unwrap().len() > 36 {
+                println!("server_id cannot be longer than 36 bytes");
+                return;
+            }
+        } else if arg.starts_with("--bitcoind_rpc_path") {
+            if rpc_path.is_some() {
+                println!("Cannot specify multiple bitcoinds");
+                return;
+            }
+            rpc_path = Some(arg.split_at(20).1.to_string());
+        } else if parse_submitter_parameter(&mut submitter_settings, &arg) {
+            // Submitter did something useful!
+        } else if parse_authenticator_parameter(&mut authenticator_settings, &arg) {
+            // So as Authenticator!
+        } else {
+            println!("Unkown arg: {}", arg);
+            return;
+        }
+    }
 
-	let submitter_state = Arc::new(setup_submitter(submitter_settings));
-	let authenticator_state = Arc::new(setup_authenticator(authenticator_settings));
+    let submitter_state = Arc::new(setup_submitter(submitter_settings));
+    let authenticator_state = Arc::new(setup_authenticator(authenticator_settings));
 
-	if listen_bind.is_none() || auth_key.is_none() || payout_addr.is_none() || rpc_path.is_none() {
-		println!("Need to specify all but server_id parameters");
-		return;
-	}
+    if listen_bind.is_none() || auth_key.is_none() || payout_addr.is_none() || rpc_path.is_none() {
+        println!("Need to specify all but server_id parameters");
+        return;
+    }
 
-	let users: Arc<Mutex<Vec<Weak<PerUserClientRef>>>> = Arc::new(Mutex::new(Vec::new()));
-	let block_info = Arc::new(RwLock::new(AllowedBlocksInfo {
-		allowed_prev_blocks: HashMap::new(),
-		best_chainwork: [0; 32],
-		cur_target: [0xff; 32],
-		old_prev_blocks: HashSet::new(),
-		tentative_submitted_prev_blocks: HashSet::new(),
-		users_ref: users.clone(),
-	}));
+    let users: Arc<Mutex<Vec<Weak<PerUserClientRef>>>> = Arc::new(Mutex::new(Vec::new()));
+    let block_info = Arc::new(RwLock::new(AllowedBlocksInfo {
+        allowed_prev_blocks: HashMap::new(),
+        best_chainwork: [0; 32],
+        cur_target: [0xff; 32],
+        old_prev_blocks: HashSet::new(),
+        tentative_submitted_prev_blocks: HashSet::new(),
+        users_ref: users.clone(),
+    }));
 
-	let rpc_client = {
-		let path = rpc_path.unwrap();
-		let path_parts: Vec<&str> = path.split('@').collect();
-		if path_parts.len() != 2 {
-			println!("Bad RPC URL provided");
-			return;
-		}
-		Arc::new(RPCClient::new(path_parts[0], path_parts[1]))
-	};
+    let rpc_client = {
+        let path = rpc_path.unwrap();
+        let path_parts: Vec<&str> = path.split('@').collect();
+        if path_parts.len() != 2 {
+            println!("Bad RPC URL provided");
+            return;
+        }
+        Arc::new(RPCClient::new(path_parts[0], path_parts[1]))
+    };
 
-	{
-		println!("Checking validity of RPC URL");
-		let mut thread_rt = tokio::runtime::current_thread::Runtime::new().unwrap();
-		let block_info_clone = block_info.clone();
-		let rpc_client = rpc_client.clone();
-		if let Err(_) = thread_rt.block_on(rpc_client.make_rpc_call("getblockcount", &Vec::new()).and_then(move |block_count| {
-			let min_height = block_count.as_i64().unwrap();
-			rpc_client.make_rpc_call("getchaintips", &Vec::new()).and_then(move |chaintips| {
-				let mut all_futures = Vec::new();
-				for entry in chaintips.as_array().unwrap() {
-					if entry.get("height").unwrap().as_i64().unwrap() >= min_height {
-						let status = entry.get("status").unwrap().as_str().unwrap();
-						if status != "invalid" {
-							let block_info = block_info_clone.clone();
-							all_futures.push(rpc_client.make_rpc_call("getblockheader", &vec![&("\"".to_string() + entry.get("hash").unwrap().as_str().unwrap() + "\"")]).and_then(move |header| {
-								block_info.write().unwrap().check_block(&header);
-								Ok(())
-							}));
-						}
-					}
-				}
-				future::join_all(all_futures)
-			})
-		})) {
-			println!("Failed");
-			return;
-		}
-		println!("Success! Starting up...");
-	}
+    {
+        println!("Checking validity of RPC URL");
+        let mut thread_rt = tokio::runtime::current_thread::Runtime::new().unwrap();
+        let block_info_clone = block_info.clone();
+        let rpc_client = rpc_client.clone();
+        if let Err(_) = thread_rt.block_on(
+            rpc_client
+                .make_rpc_call("getblockcount", &Vec::new())
+                .and_then(move |block_count| {
+                    let min_height = block_count.as_i64().unwrap();
+                    rpc_client
+                        .make_rpc_call("getchaintips", &Vec::new())
+                        .and_then(move |chaintips| {
+                            let mut all_futures = Vec::new();
+                            for entry in chaintips.as_array().unwrap() {
+                                if entry.get("height").unwrap().as_i64().unwrap() >= min_height {
+                                    let status = entry.get("status").unwrap().as_str().unwrap();
+                                    if status != "invalid" {
+                                        let block_info = block_info_clone.clone();
+                                        all_futures.push(
+                                            rpc_client
+                                                .make_rpc_call(
+                                                    "getblockheader",
+                                                    &vec![
+                                                        &("\"".to_string()
+                                                            + entry
+                                                                .get("hash")
+                                                                .unwrap()
+                                                                .as_str()
+                                                                .unwrap()
+                                                            + "\""),
+                                                    ],
+                                                )
+                                                .and_then(move |header| {
+                                                    block_info
+                                                        .write()
+                                                        .unwrap()
+                                                        .check_block(&header);
+                                                    Ok(())
+                                                }),
+                                        );
+                                    }
+                                }
+                            }
+                            future::join_all(all_futures)
+                        })
+                }),
+        ) {
+            println!("Failed");
+            return;
+        }
+        println!("Success! Starting up...");
+    }
 
-	let mut rt = tokio::runtime::Builder::new().build().unwrap();
+    let mut rt = tokio::runtime::Builder::new().build().unwrap();
 
-	let block_info_clone = block_info.clone();
-	let rpc_client_clone = rpc_client.clone();
-	let best_block_hash = Arc::new(Mutex::new(String::new()));
-	rt.spawn(timer::Interval::new(Instant::now() + Duration::from_secs(1), Duration::from_millis(50)).for_each(move |_| {
+    let block_info_clone = block_info.clone();
+    let rpc_client_clone = rpc_client.clone();
+    let best_block_hash = Arc::new(Mutex::new(String::new()));
+    rt.spawn(timer::Interval::new(Instant::now() + Duration::from_secs(1), Duration::from_millis(50)).for_each(move |_| {
 		let best_block_hash_clone = best_block_hash.clone();
 		let block_info = block_info_clone.clone();
 		rpc_client_clone.make_rpc_call("getblockchaininfo", &Vec::new()).and_then(move |chain_info| {
@@ -406,7 +455,7 @@ fn main() {
 		future::result(Ok(()))
 	}));
 
-	rt.spawn(futures::lazy(move || -> Result<(), ()> {
+    rt.spawn(futures::lazy(move || -> Result<(), ()> {
 		match net::TcpListener::bind(&listen_bind.unwrap()) {
 			Ok(listener) => {
 				let mut max_client_id = 0;
@@ -956,5 +1005,5 @@ fn main() {
 
 		Ok(())
 	}));
-	rt.shutdown_on_idle().wait().unwrap();
+    rt.shutdown_on_idle().wait().unwrap();
 }
