@@ -201,7 +201,7 @@ impl MiningServer {
 			})).then(|_| {
 				future::result(Ok(()))
 			}));
-			let mut sink_dup = send_sink.clone();
+			let sink_dup = send_sink.clone();
 
 			let mut client_list = us.clients.lock().unwrap();
 			let client = Arc::new(MiningClient {

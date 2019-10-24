@@ -34,11 +34,11 @@ fn le24_into_slice(u: usize, v: &mut [u8]) -> bool {
 
 fn push_compact_size(u: usize, v: &mut bytes::BytesMut) {
 	match u {
-		0...253 => {
+		0..=253 => {
 			v.reserve(1);
 			v.put_u8(u as u8);
 		},
-		253...0x10000 => {
+		253..=0x10000 => {
 			v.reserve(3);
 			v.put_u8(253);
 			v.put_u16_le(u as u16);

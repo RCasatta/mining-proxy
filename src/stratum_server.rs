@@ -50,9 +50,9 @@ fn extend_vec_from_hex(hex: &str, out: &mut Vec<u8>) -> Result<(), BadMessageErr
 	for (idx, c) in hex.as_bytes().iter().enumerate() {
 		b <<= 4;
 		match *c {
-			b'A'...b'F' => b |= c - b'A' + 10,
-			b'a'...b'f' => b |= c - b'a' + 10,
-			b'0'...b'9' => b |= c - b'0',
+			b'A'..=b'F' => b |= c - b'A' + 10,
+			b'a'..=b'f' => b |= c - b'a' + 10,
+			b'0'..=b'9' => b |= c - b'0',
 			_ => return Err(BadMessageError),
 		}
 		if (idx & 1) == 1 {
@@ -69,9 +69,9 @@ fn hex_to_be32(hex: &str) -> Result<u32, BadMessageError> {
 	for c in hex.as_bytes() {
 		res <<= 4;
 		match *c {
-			b'A'...b'F' => res |= (c - b'A' + 10) as u32,
-			b'a'...b'f' => res |= (c - b'a' + 10) as u32,
-			b'0'...b'9' => res |= (c - b'0') as u32,
+			b'A'..=b'F' => res |= (c - b'A' + 10) as u32,
+			b'a'..=b'f' => res |= (c - b'a' + 10) as u32,
+			b'0'..=b'9' => res |= (c - b'0') as u32,
 			_ => return Err(BadMessageError),
 		}
 	}

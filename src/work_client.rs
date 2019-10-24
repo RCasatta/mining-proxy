@@ -30,7 +30,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct EventualTxData {
 	// We dont really want Fn here, we want FnOnce, but we can't because that'd require a move of
 	// the function onto stack, which is of unknown size, so we cant...
-	callees: Mutex<Vec<Box<Fn(&Vec<Vec<u8>>, &BlockHeader, &Vec<u8>) + Send>>>,
+	callees: Mutex<Vec<Box<dyn Fn(&Vec<Vec<u8>>, &BlockHeader, &Vec<u8>) + Send>>>,
 	value: RwLock<Option<(Vec<Vec<u8>>, BlockHeader, Vec<u8>)>>,
 }
 impl EventualTxData {
@@ -403,7 +403,7 @@ impl MultiJobProvider {
 
 		tokio::spawn(future::lazy(move || -> Result<(), ()> {
 			for (idx, host) in job_provider_hosts.drain(..).enumerate() {
-				let (mut handler, mut job_rx) = JobProviderHandler::new(None);
+				let (handler, job_rx) = JobProviderHandler::new(None);
 				cur_work_rc.lock().unwrap().jobs.push(WorkProviderHolder {
 					is_connected: false,
 					last_job: None,

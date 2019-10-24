@@ -56,7 +56,7 @@ impl MultiPoolProvider {
 		tokio::spawn(future::lazy(move || -> Result<(), ()> {
 			for (idx, pool) in pool_hosts.drain(..).enumerate() {
 				let (mut auth_write, auth_read) = mpsc::channel(5);
-				let (mut handler, mut pool_rx) = PoolHandler::new(None, auth_read);
+				let (handler, pool_rx) = PoolHandler::new(None, auth_read);
 				auth_write.start_send(PoolAuthAction::AuthUser(PoolUserAuth {
 					suggested_target: [0xff; 32],
 					minimum_target: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0, 0, 0, 0], // Diff 1
